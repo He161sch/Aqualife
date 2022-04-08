@@ -2,10 +2,7 @@ package aqua.blatt1.broker;
 
 import aqua.blatt1.common.Direction;
 import aqua.blatt1.common.FishModel;
-import aqua.blatt1.common.msgtypes.DeregisterRequest;
-import aqua.blatt1.common.msgtypes.HandoffRequest;
-import aqua.blatt1.common.msgtypes.RegisterRequest;
-import aqua.blatt1.common.msgtypes.RegisterResponse;
+import aqua.blatt1.common.msgtypes.*;
 import aqua.blatt2.broker.PoisonPill;
 import aqua.blatt2.broker.Poisoner;
 import messaging.Endpoint;
@@ -22,7 +19,7 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 public class Broker {
 
     private Endpoint endpoint;
-    private ClientCollection clients;
+    private ClientCollection<InetSocketAddress> clients;
     private int id = 0;
     private int POOL_SIZE = 3;
     private ExecutorService executor = Executors.newFixedThreadPool(POOL_SIZE);
@@ -69,11 +66,21 @@ public class Broker {
     public void register(Message msg) {
         String idName = "Tank" + id;
         lock.writeLock().lock();
+        boolean first = clients.size() == 0;
         clients.add(idName, msg.getSender());
         lock.writeLock().unlock();
 
-//        InetSocketAddress left = (InetSocketAddress) clients.getLeftNeighorOf(clients.indexOf(msg.getSender()));
-//        InetSocketAddress right = (InetSocketAddress) clients.getRightNeighorOf(clients.indexOf(msg.getSender()));
+        lock.readLock().lock();
+        updateNeighbor(msg.getSender());
+        updateNeighbor(clients.getLeftNeighorOf(clients.indexOf(msg.getSender())));
+        updateNeighbor(clients.getRightNeighorOf(clients.indexOf(msg.getSender())));
+        lock.readLock().unlock();
+
+        if(first) {
+            endpoint.send(msg.getSender(), new Token());
+        }
+
+
 
         endpoint.send(msg.getSender(), new RegisterResponse(idName));
 
@@ -84,7 +91,15 @@ public class Broker {
 
     public void deregister(Message msg) {
         lock.writeLock().lock();
+        InetSocketAddress left = clients.getLeftNeighorOf(clients.indexOf(msg.getSender()));
+        InetSocketAddress right = clients.getRightNeighorOf(clients.indexOf(msg.getSender()));
+
         clients.remove(clients.indexOf(msg.getSender()));
+
+        if (clients.size() > 0) {
+            updateNeighbor(left);
+            updateNeighbor(right);
+        }
         lock.writeLock().unlock();
 
         System.out.println("Deregister: " + msg.getSender().toString());
@@ -97,12 +112,18 @@ public class Broker {
         InetSocketAddress reciever = null;
         lock.readLock().lock();
         if (direction == Direction.LEFT) {
-            reciever = (InetSocketAddress) clients.getLeftNeighorOf(clients.indexOf(msg.getSender()));
+            reciever = clients.getLeftNeighorOf(clients.indexOf(msg.getSender()));
         } else if (direction == Direction.RIGHT) {
-            reciever = (InetSocketAddress) clients.getRightNeighorOf(clients.indexOf(msg.getSender()));
+            reciever = clients.getRightNeighorOf(clients.indexOf(msg.getSender()));
         }
         lock.readLock().unlock();
         endpoint.send(reciever, msg.getPayload());
+        System.out.println("handoff");
+    }
+
+    private void updateNeighbor(InetSocketAddress client) {
+        int idx = clients.indexOf(client);
+        endpoint.send(clients.getClient(idx), new NeighborUpdate(clients.getLeftNeighorOf(idx), clients.getRightNeighorOf(idx)));
     }
 
     public static void main(String[] args) {
